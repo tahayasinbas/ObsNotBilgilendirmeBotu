@@ -1,285 +1,338 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service as ChromeService
+from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from PIL import Image, ImageFilter, ImageOps
-import cv2
-import numpy as np
 from time import sleep
 import re
 import os
-from Bilgiler import KullaniciAd,Sifre,Url
+from Bilgiler import KullaniciAd, Sifre
 
-DersBilgi = {"DersAdi":{"FinalNot":"","Vize":"","HarfNotu":"","Durum":"","Ortalama":"" }}
-Liste = []
-# Chrome driver yolu kontrol edilmeli ve gerekirse değiştirilmeli
-webdriver_service = Service("C:\Drivers\chromedriver-win64\chromedriver-win64\chromedriver.exe")
+# WebDriver Manager için detaylı loglamayı açmak isterseniz aşağıdaki satırların yorumunu kaldırabilirsiniz.
+# import logging
+# logging.basicConfig(level=logging.DEBUG)
+# logging.getLogger('webdriver_manager').setLevel(logging.DEBUG)
 
 class ObsNotBilgilendirmeBot:
     def __init__(self, Isim, Sifre):
         self.chrome_options = Options()
+        self.chrome_options.binary_location = "/usr/bin/chromium" # Eğer Chromium kullanıyorsanız ve yolu belirtmek gerekirse
+
         self.chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         self.chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         self.chrome_options.add_experimental_option("useAutomationExtension", False)
+        self.chrome_options.add_argument("--headless=new")
+        self.chrome_options.add_argument("--no-sandbox")
+        self.chrome_options.add_argument("--disable-dev-shm-usage")
         self.chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
-        self.chrome_options.add_argument("--start-maximized")  # Pencereyi maksimize et
-        self.driver = webdriver.Chrome(service=webdriver_service, options=self.chrome_options)
-        self.driver.implicitly_wait(10)  # Daha uzun bekleme süresi
+        
+        try:
+            print("DEBUG: ChromeDriver başlatılıyor (webdriver-manager)...")
+            # chrome_type="chromium" parametresini Chromium kullanıyorsanız ekleyebilirsiniz.
+            # driver_executable_path = ChromeDriverManager(chrome_type="chromium").install() 
+            driver_executable_path = ChromeDriverManager().install() # Google Chrome için varsayılan
+            print(f"DEBUG: webdriver-manager tarafından kullanılan ChromeDriver yolu: {driver_executable_path}")
+            
+            service = ChromeService(executable_path=driver_executable_path)
+            self.driver = webdriver.Chrome(service=service, options=self.chrome_options)
+            print("DEBUG: ChromeDriver başarıyla başlatıldı.")
+        except Exception as e:
+            print(f"ChromeDriver başlatılırken hata oluştu (webdriver-manager): {e}")
+            print("Lütfen internet bağlantınızı, Chrome/Chromium tarayıcınızın kurulu ve güncel olduğundan")
+            print("ve webdriver-manager kütüphanesinin güncel olduğundan emin olun.")
+            raise 
+
+        self.driver.implicitly_wait(10)
         self.Isim = Isim
         self.Sifre = Sifre
         self.actions = ActionChains(self.driver)
-        self.DersBilgi = {"DersAdi":{"FinalNot":"","Vize":"","HarfNotu":"","Durum":"","Ortalama":"" }}
+        self.DersBilgi = {} # Ders bilgilerini boş bir sözlük olarak başlat
 
     def scroll_to_bottom(self):
-        """Sayfanın en altına kaydırır"""
         self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         sleep(1)
+
     def scroll_to_element(self, element):
-        """Belirtilen elemente kaydırır"""
         try:
             self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
             sleep(1)
         except Exception as e:
             print(f"Elemente kaydırma başarısız: {e}")
+
     def click_element_safely(self, element):
-        """Elemente güvenli şekilde tıklar"""
         try:
-            # Önce elementin görünür olmasını bekle
             WebDriverWait(self.driver, 10).until(
                 EC.visibility_of(element)
             )
-            
-            # Elemente scroll yap
             self.scroll_to_element(element)
-            
-            # ActionChains yerine direkt element click ile dene
             element.click()
         except Exception as e:
-            print(f"Click with direct method failed: {e}")
+            print(f"Click with direct method failed: {e}, trying JS click.")
             try:
-                # JavaScript ile tıklama dene
                 self.driver.execute_script("arguments[0].click();", element)
-            except Exception as e:
-                print(f"Click with JS failed: {e}")
-                # Son çare olarak ActionChains kullan
+            except Exception as e_js:
+                print(f"Click with JS failed: {e_js}, trying ActionChains.")
+                WebDriverWait(self.driver, 10).until(
+                     EC.element_to_be_clickable(element)
+                )
                 self.actions.move_to_element(element).click().perform()
 
- 
-
-
-
     def CaptchaResim(self):
-        # CAPTCHA elementini bul
-        CaptchaElement = self.driver.find_element(By.ID, "imgCaptchaImg")
-        
-        # CAPTCHA'nın src URL'sini al
+        CaptchaElement = WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.ID, "imgCaptchaImg"))
+        )
         captcha_src = CaptchaElement.get_attribute("src")
         
-        # JavaScript ile sayfaya geçici bir büyütülmüş görüntü ekle
         enhance_script = f"""
-        // Mevcut görüntüyü gizle
         arguments[0].style.display = 'none';
-        
-        // Yeni, büyütülmüş görüntü oluştur
         var enhancedImg = document.createElement('img');
         enhancedImg.src = "{captcha_src}";
         enhancedImg.id = "enhancedCaptcha";
-        enhancedImg.style.width = "300px"; // Genişliği ayarla
+        enhancedImg.style.width = "300px"; 
         enhancedImg.style.border = "2px solid blue";
         enhancedImg.style.margin = "20px";
-        
-        // Yeni görüntüyü eskisinin yanına ekle
         arguments[0].parentNode.insertBefore(enhancedImg, arguments[0]);
         """
-        
         self.driver.execute_script(enhance_script, CaptchaElement)
-        sleep(2)
+        sleep(1)
         
-        # Büyütülmüş görüntüyü bul ve ekran görüntüsünü al
-        enhanced_element = self.driver.find_element(By.ID, "enhancedCaptcha")
-        enhanced_element.screenshot("cropped_captcha.png")
+        enhanced_element = WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.ID, "enhancedCaptcha"))
+        )
+        WebDriverWait(self.driver, 10).until(EC.visibility_of(enhanced_element))
         
-        # Temizlik: Eklenen elementi kaldır ve orijinali geri göster
+        screenshot_path = os.path.join(os.getcwd(), "cropped_captcha.png") 
+        try:
+            enhanced_element.screenshot(screenshot_path)
+            print(f"CAPTCHA ekran görüntüsü {screenshot_path} adresine kaydedildi.")
+        except Exception as e:
+            print(f"CAPTCHA ekran görüntüsü alınamadı: {e}")
+            raise
+
         self.driver.execute_script("""
-        document.getElementById('enhancedCaptcha').remove();
+        var el = document.getElementById('enhancedCaptcha');
+        if (el) el.remove();
         arguments[0].style.display = '';
         """, CaptchaElement)
     
-    
-    
-
-
-
-
-    def ObsLogin(self,Okul_Url):
-        self.driver.get(Okul_Url)
-        OgrenciGirisHref = self.driver.find_element(By.XPATH, "//a[text() ='Öğrenci Girişi']")
+    def ObsLogin(self):
+        self.driver.get("https://obs.mu.edu.tr/") 
+        
+        OgrenciGirisHref = WebDriverWait(self.driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//a[text() ='Öğrenci Girişi']"))
+        )
         self.click_element_safely(OgrenciGirisHref)
-        sleep(3)
         
-        KullaniciAdInput = self.driver.find_element(By.XPATH, "//input[@title = 'Kullanıcı Adı']")
+        KullaniciAdInput = WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, "//input[@title = 'Kullanıcı Adı']"))
+        )
         KullaniciAdInput.send_keys(self.Isim)
-        sleep(2)
         
-        SifreInput = self.driver.find_element(By.XPATH, "//input[@type = 'password']")
+        SifreInput = WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, "//input[@type = 'password']"))
+        )
         SifreInput.send_keys(self.Sifre)
-        sleep(2)
         
-        # CAPTCHA resmini yakala
         self.CaptchaResim()
-        # CAPTCHA çözümü için resimonisle.py çalıştır
-        os.system("python resimonisle.py")
-
-        # Sonuç dosyasından CAPTCHA sonucunu al
-        with open("captcha_sonuc.txt", "r", encoding="utf-8") as f:
-            captcha_sonuc = f.read().strip()
         
-        ToplamInput = self.driver.find_element(By.XPATH, "//input[@title = 'Sayıların Toplamını Giriniz']")
-        ToplamInput.send_keys(captcha_sonuc)
-        sleep(1)
+        os.system("python resimonisle.py") # Hata yönetimi için subprocess düşünülebilir
 
-        GirisBut = self.driver.find_element(By.XPATH,"//a[@id ='btnLogin']")
+        try:
+            with open("captcha_sonuc.txt", "r", encoding="utf-8") as f:
+                captcha_sonuc = f.read().strip()
+            if not captcha_sonuc:
+                raise ValueError("CAPTCHA sonuç dosyası boş.")
+        except FileNotFoundError:
+            print("HATA: captcha_sonuc.txt dosyası bulunamadı. resimonisle.py doğru çalıştı mı?")
+            raise
+        except ValueError as ve:
+            print(f"HATA: {ve}")
+            raise
+
+        ToplamInput = WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, "//input[@title = 'Sayıların Toplamını Giriniz']"))
+        )
+        ToplamInput.send_keys(captcha_sonuc)
+
+        GirisBut = WebDriverWait(self.driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH,"//a[@id ='btnLogin']"))
+        )
         self.click_element_safely(GirisBut)
-        sleep(3)
 
     def MenulerIslemleri(self):
         try:
-            # Menü butonunu bul
-            MenuBut = WebDriverWait(self.driver, 10).until(
+            MenuBut = WebDriverWait(self.driver, 20).until(
                 EC.element_to_be_clickable((By.XPATH, "//i[@class = 'fal fa-map-marked-alt']/.."))
             )
             self.click_element_safely(MenuBut)
-            sleep(3)
             
-            # Not listesi butonunu bul
             NotMenuBut = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, "//p[text() ='Not Listesi']/.."))
             )
             self.click_element_safely(NotMenuBut)
-            sleep(3)
             
-            # iframe'e geçiş
             try:
-                iframe = self.driver.find_element(By.ID, "IFRAME1")
-                self.driver.switch_to.frame(iframe)
+                WebDriverWait(self.driver, 10).until(
+                    EC.frame_to_be_available_and_switch_to_it((By.ID, "IFRAME1"))
+                )
                 print("iframe'e geçiş yapıldı")
-            except:
-                print("iframe bulunamadı, devam ediliyor...")
+            except Exception as e:
+                print(f"iframe (IFRAME1) bulunamadı veya geçiş yapılamadı: {e}")
+                self.DersBilgi["error"] = "Not listesi iframe'i bulunamadı." # Hata bilgisi ekle
+                return 
             
-            # Tablo satırlarını bul
-            Tablolar = self.driver.find_elements(By.XPATH, '//*[@id="grd_not_listesi"]/tbody/tr')
+            Tablolar = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_all_elements_located((By.XPATH, '//*[@id="grd_not_listesi"]/tbody/tr'))
+            )
             
             if len(Tablolar) > 0:
-                # Başlık satırını atla
-                if len(Tablolar) > 1:
-                    satir_baslangic = 1  # İlk satır başlık olabilir
-                else:
-                    satir_baslangic = 0
-                    
-                # Her satırı işle
+                satir_baslangic = 1 if len(Tablolar) > 1 and Tablolar[0].find_elements(By.XPATH, "./th") else 0
+                
                 for i in range(satir_baslangic, len(Tablolar)):
                     Tablo = Tablolar[i]
                     TabloIcerikler = Tablo.find_elements(By.XPATH, "./td")
                     
                     if len(TabloIcerikler) < 8:
-                        print(f"Bu satırda yeterli sütun yok, atlanıyor...")
+                        print(f"Satır {i+1}: Yeterli sütun yok ({len(TabloIcerikler)} adet), atlanıyor...")
                         continue
                         
-                    DersAdi = TabloIcerikler[2].text
+                    DersAdi = TabloIcerikler[2].text.strip()
+                    if not DersAdi :
+                        print(f"Satır {i+1}: Ders adı boş, atlanıyor...")
+                        continue
                     print(f"İşlenen ders: {DersAdi}")
 
-                    # Notları içeren hücreyi al
                     NotHucresi = TabloIcerikler[4]
+                    NotMetni = NotHucresi.text
                     
-                    # Varsayılan değerler
                     Vize = "Girilmedi"
                     Final = "Girilmedi"
                     Proje = "Girilmedi"
+                    Odev = "Girilmedi" 
                     
-                    # Not metnini al
-                    NotMetni = NotHucresi.text
-                    
-                    # Vize notunu ara
-                    vize_match = re.search(r'Vize\s*:\s*(\d+)', NotMetni)
-                    if vize_match:
-                        Vize = vize_match.group(1)
+                    vize_match = re.search(r'Vize\s*:\s*([\d\.]+)', NotMetni)
+                    if vize_match: Vize = vize_match.group(1)
                         
-                    # Final notunu ara
-                    final_match = re.search(r'Final\s*:\s*(\d+)', NotMetni)
-                    if final_match:
-                        Final = final_match.group(1)
+                    final_match = re.search(r'Final\s*:\s*([\d\.]+)', NotMetni)
+                    if final_match: Final = final_match.group(1)
                         
-                    # Proje notunu ara (eğer varsa)
-                    proje_match = re.search(r'Proje\s*:\s*(\d+)', NotMetni)
-                    if proje_match:
-                        Proje = proje_match.group(1)
+                    proje_match = re.search(r'Proje\s*:\s*([\d\.]+)', NotMetni)
+                    if proje_match: Proje = proje_match.group(1)
+
+                    odev_match = re.search(r'Ödev\s*:\s*([\d\.]+)', NotMetni)
+                    if odev_match: Odev = odev_match.group(1)
 
                     Ortalama = TabloIcerikler[5].text.strip() or "Girilmedi"
                     HarfNotu = TabloIcerikler[6].text.strip() or "Girilmedi"
                     Durum = TabloIcerikler[7].text.strip() or "Girilmedi"
 
-                    # Sözlükte dersi yoksa ekle
-                    if DersAdi not in self.DersBilgi:
-                        self.DersBilgi[DersAdi] = {}
-
-                    self.DersBilgi[DersAdi]["Vize"] = Vize
-                    self.DersBilgi[DersAdi]["Final"] = Final
-                    self.DersBilgi[DersAdi]["Proje"] = Proje
-                    self.DersBilgi[DersAdi]["Ortalama"] = Ortalama
-                    self.DersBilgi[DersAdi]["HarfNotu"] = HarfNotu
-                    self.DersBilgi[DersAdi]["Durum"] = Durum
+                    self.DersBilgi[DersAdi] = {
+                        "Vize": Vize,
+                        "Final": Final,
+                        "Proje": Proje,
+                        "Odev": Odev,
+                        "Ortalama": Ortalama,
+                        "HarfNotu": HarfNotu,
+                        "Durum": Durum
+                    }
             else:
-                print("Tablo satırları bulunamadı!")
-                
-            # Ana frame'e geri dön
+                print("Not listesi tablosunda satır bulunamadı!")
+                self.DersBilgi["info"] = "Not listesi tablosunda ders bulunamadı." # Bilgi mesajı
+            
             self.driver.switch_to.default_content()
             
         except Exception as e:
             print(f"MenulerIslemleri sırasında hata: {e}")
-            
+            self.DersBilgi.setdefault("error", f"Menü işlemleri sırasında hata: {str(e)}")
+            try:
+                self.driver.switch_to.default_content() # Hata durumunda da iframe'den çıkmaya çalış
+            except:
+                pass
+
     def NotlariGoruntule(self):
-        print("\n--- DERS NOTLARI ---")
+        print("\n--- DERS NOTLARI (Konsol) ---")
+        if not self.DersBilgi:
+            print("Henüz ders bilgisi çekilmedi veya ders bulunamadı.")
+            return
+        if self.DersBilgi.get("error"):
+            print(f"HATA: {self.DersBilgi['error']}")
+            return
+        if self.DersBilgi.get("info") and len(self.DersBilgi) == 1 : # Sadece info varsa
+             print(f"BİLGİ: {self.DersBilgi['info']}")
+             return
+
+        processed_ders_count = 0
         for ders, bilgiler in self.DersBilgi.items():
-            if ders == "DersAdi":  # Şablon dersi geç
+            if ders in ["error", "info"]: # "error" veya "info" anahtarlarını atla
                 continue
+
             print(f"\nDers: {ders}")
-            print(f"Vize: {bilgiler.get('Vize', 'Girilmedi')}")
-            print(f"Final: {bilgiler.get('Final', 'Girilmedi')}")
-            if 'Proje' in bilgiler and bilgiler['Proje'] != "Girilmedi":
-                print(f"Proje: {bilgiler['Proje']}")
-            print(f"Ortalama: {bilgiler.get('Ortalama', 'Girilmedi')}")
-            print(f"Harf Notu: {bilgiler.get('HarfNotu', 'Girilmedi')}")
-            print(f"Durum: {bilgiler.get('Durum', 'Girilmedi')}")
+            print(f"  Vize: {bilgiler.get('Vize', 'Girilmedi')}")
+            print(f"  Final: {bilgiler.get('Final', 'Girilmedi')}")
+            if bilgiler.get('Proje') and bilgiler['Proje'] != "Girilmedi":
+                print(f"  Proje: {bilgiler['Proje']}")
+            if bilgiler.get('Odev') and bilgiler['Odev'] != "Girilmedi":
+                print(f"  Ödev: {bilgiler['Odev']}")
+            print(f"  Ortalama: {bilgiler.get('Ortalama', 'Girilmedi')}")
+            print(f"  Harf Notu: {bilgiler.get('HarfNotu', 'Girilmedi')}")
+            print(f"  Durum: {bilgiler.get('Durum', 'Girilmedi')}")
+            processed_ders_count += 1
+        
+        if processed_ders_count == 0 and not self.DersBilgi.get("error") and not self.DersBilgi.get("info"):
+            print("Gösterilecek ders notu bulunamadı.")
 
     def Calistir(self):
         try:
-            self.ObsLogin(Url)
-            sleep(5)
+            self.DersBilgi = {} # Her çalıştırmada DersBilgi'yi sıfırla
+            self.ObsLogin()
+            # Login sonrası ana sayfada bir elementin varlığını bekleyerek sayfanın yüklendiğinden emin ol
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.XPATH, "//i[@class = 'fal fa-map-marked-alt']/..")) # Menü butonu
+            )
+            
             GirisSonuclar = self.driver.find_elements(By.XPATH,"//span[@id = 'lblSonuclar']")
-            if not GirisSonuclar:  # Eğer boşsa (yani hata mesajı yoksa)
+            
+            if not GirisSonuclar or not GirisSonuclar[0].text.strip():
+                print("Login başarılı, menü işlemleri başlıyor.")
                 self.MenulerIslemleri()
-                self.NotlariGoruntule()
-                self.driver.quit()
+                # self.DersBilgi'de "error" anahtarı yoksa ve boş değilse başarılı kabul et
+                if not self.DersBilgi.get("error") and any(key not in ["info", "error"] for key in self.DersBilgi):
+                    print("Notlar başarıyla çekildi.")
+                elif self.DersBilgi.get("info"): # Eğer sadece info mesajı varsa (örn: tablo boş)
+                    print(f"İşlem tamamlandı. Bilgi: {self.DersBilgi.get('info')}")
+                # Eğer MenulerIslemleri'nde bir hata olduysa DersBilgi'de error olabilir, bu durum zaten yukarıda yakalanır.
             else:
-                print("Login yapılamadı! Bidaha deneniyor...")
-                self.driver.quit()
-                raise Exception("Login başarısız oldu.")
+                hata_mesaji = GirisSonuclar[0].text.strip()
+                print(f"Login yapılamadı! OBS Hata Mesajı: {hata_mesaji}")
+                self.DersBilgi = {"error": f"Login başarısız: {hata_mesaji}"}
+                raise Exception(f"Login başarısız oldu: {hata_mesaji}")
         except Exception as e:
-            print(f"Hata oluştu: {e}")
-            try:
-                self.driver.quit()
-            except:
-                pass
+            print(f"Calistir sırasında genel bir hata oluştu: {e}")
+            # Eğer DersBilgi zaten bir hata içeriyorsa üzerine yazma, yoksa hatayı ekle
+            self.DersBilgi.setdefault("error", str(e)) 
             raise e 
-                
-           
-
+        # self.driver.quit() çağrıları kaldırıldı. Sorumluluk çağıran fonksiyonda.
 
 if __name__ == "__main__":
-    # Botu başlat
-    ObsBot = ObsNotBilgilendirmeBot(KullaniciAd, Sifre)
-    ObsBot.Calistir() 
+    print("ObsNotBilgilendirmeBot doğrudan çalıştırılıyor (test amaçlı)...")
+    obs_bot_instance = None 
+    try:
+        obs_bot_instance = ObsNotBilgilendirmeBot(KullaniciAd, Sifre)
+        obs_bot_instance.Calistir()
+        obs_bot_instance.NotlariGoruntule() 
+    except Exception as e:
+        print(f"Ana test bloğunda hata: {e}")
+        # obs_bot_instance.DersBilgi doluysa ve error içeriyorsa tekrar NotlariGoruntule çağrılabilir
+        if obs_bot_instance and obs_bot_instance.DersBilgi and obs_bot_instance.DersBilgi.get("error"):
+            print("Hata sonrası DersBilgi durumu:")
+            obs_bot_instance.NotlariGoruntule()
+    finally:
+        try:
+            if obs_bot_instance and hasattr(obs_bot_instance, 'driver') and obs_bot_instance.driver:
+                obs_bot_instance.driver.quit()
+                print("Test sonrası WebDriver kapatıldı.")
+        except Exception as e:
+            print(f"Test sonrası WebDriver kapatılırken hata: {e}")
